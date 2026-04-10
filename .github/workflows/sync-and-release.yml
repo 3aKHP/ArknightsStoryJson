@@ -24,6 +24,7 @@ jobs:
           UPSTREAM_SHA=$(git ls-remote https://github.com/050644zf/ArknightsStoryJson.git HEAD | cut -f1)
           echo "sha=${UPSTREAM_SHA}" >> "$GITHUB_OUTPUT"
           echo "sha_short=${UPSTREAM_SHA:0:7}" >> "$GITHUB_OUTPUT"
+          echo "tag=upstream-${UPSTREAM_SHA}" >> "$GITHUB_OUTPUT"
           echo "Upstream SHA: ${UPSTREAM_SHA}"
 
       - name: Get latest release tag from this fork
@@ -40,11 +41,13 @@ jobs:
         run: |
           UPSTREAM_SHA="${{ steps.upstream.outputs.sha }}"
           LATEST_TAG="${{ steps.latest_release.outputs.tag }}"
-          if [ "${LATEST_TAG}" = "${UPSTREAM_SHA}" ]; then
+          # The release tag is "upstream-<SHA>"; strip prefix for comparison
+          LATEST_SHA="${LATEST_TAG#upstream-}"
+          if [ "${LATEST_SHA}" = "${UPSTREAM_SHA}" ]; then
             echo "No update needed: fork release tag matches upstream SHA."
             echo "needed=false" >> "$GITHUB_OUTPUT"
           else
-            echo "Update needed: upstream=${UPSTREAM_SHA}, latest_release=${LATEST_TAG}"
+            echo "Update needed: upstream=${UPSTREAM_SHA}, latest_release_sha=${LATEST_SHA}"
             echo "needed=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -87,13 +90,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           UPSTREAM_SHA="${{ steps.upstream.outputs.sha }}"
+          RELEASE_TAG="${{ steps.upstream.outputs.tag }}"
           RELEASE_DATE=$(date -u +%Y-%m-%d)
           RELEASE_NAME="Story Data ${RELEASE_DATE}"
 
           printf 'Upstream commit: `%s`\n\nSynced from \x5B050644zf/ArknightsStoryJson\x5D(https://github.com/050644zf/ArknightsStoryJson) on %s.\n\nThis release contains the `zh_CN/` story data directory, excluding user-generated processing files.\n' \
             "${UPSTREAM_SHA}" "${RELEASE_DATE}" > /tmp/release_notes.md
 
-          gh release create "${UPSTREAM_SHA}" \
+          gh release create "${RELEASE_TAG}" \
             --repo "${{ github.repository }}" \
             --title "${RELEASE_NAME}" \
             --notes-file /tmp/release_notes.md \
