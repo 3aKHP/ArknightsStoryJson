@@ -90,12 +90,11 @@ jobs:
           RELEASE_DATE=$(date -u +%Y-%m-%d)
           RELEASE_NAME="Story Data ${RELEASE_DATE}"
 
+          printf 'Upstream commit: `%s`\n\nSynced from \x5B050644zf/ArknightsStoryJson\x5D(https://github.com/050644zf/ArknightsStoryJson) on %s.\n\nThis release contains the `zh_CN/` story data directory, excluding user-generated processing files.\n' \
+            "${UPSTREAM_SHA}" "${RELEASE_DATE}" > /tmp/release_notes.md
+
           gh release create "${UPSTREAM_SHA}" \
             --repo "${{ github.repository }}" \
             --title "${RELEASE_NAME}" \
-            --notes "Upstream commit: \`${UPSTREAM_SHA}\`
-
-Synced from [050644zf/ArknightsStoryJson](https://github.com/050644zf/ArknightsStoryJson) on ${RELEASE_DATE}.
-
-This release contains the \`zh_CN/\` story data directory, excluding user-generated processing files." \
+            --notes-file /tmp/release_notes.md \
             /tmp/zh_CN.zip
