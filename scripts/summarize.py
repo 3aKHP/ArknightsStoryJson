@@ -55,13 +55,18 @@ CHAPTER_PROMPT = """请将以下章节对话总结为一段连贯的中文摘要
 
 摘要："""
 
-EVENT_PROMPT = """请根据以下各章节摘要，为整个活动写一段200~300字的中文梗概，覆盖主线脉络、核心冲突、关键角色和结局。不要机械罗列，要形成自然流畅的叙事综述。
+EVENT_PROMPT = """请将以下明日方舟活动「{event_name}」的完整剧情对话总结为一段300~500字的中文梗概。
 
-活动：{event_name}（共{total}章）
+要求：
+- 覆盖主线脉络和核心冲突
+- 突出关键角色的动机转变和重要抉择
+- 捕捉章节之间的因果联系和伏笔照应
+- 写出结局的情感和主题落点
+- 用自然流畅的叙事语言，不要机械罗列章节
 
-{chapter_summaries}
+{full_text}
 
-活动梗概："""
+「{event_name}」梗概："""
 
 # ---------------------------------------------------------------------------
 # Text extraction from raw story JSON
@@ -176,19 +181,18 @@ def summarize_chapter(code: str, name: str, event_name: str, tag: str, text: str
     )
 
 
-def summarize_event(event_name: str, total: int, chapter_summaries: str) -> str:
-    """Generate a per-event summary (10:1 compression)."""
+def summarize_event_v2(event_name: str, full_text: str) -> str:
+    """Generate a per-event summary from full chapter dialogue (V2)."""
     prompt = EVENT_PROMPT.format(
         event_name=event_name,
-        total=total,
-        chapter_summaries=chapter_summaries,
+        full_text=full_text,
     )
     return _call_api(
         [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
-        max_tokens=800,
+        max_tokens=1200,
     )
 
 
@@ -261,41 +265,50 @@ def _scan_chapters(root: Path) -> list[dict]:
     return chapters
 
 
-def _run_chapter_summaries(chapters: list[dict]) -> dict[str, str]:
-    """Generate per-chapter summaries with concurrent API calls."""
+def _run_chapter_summaries(chapters: list[dict]) -> tuple[dict[str, str], dict[str, str]]:
+    """Generate per-chapter summaries with concurrent API calls.
+
+    Returns (summaries, full_texts) — full_texts are the original extracted
+    dialogue text for each chapter, used later by V2 event summarization.
+    """
     summaries: dict[str, str] = {}
+    full_texts: dict[str, str] = {}
     total = len(chapters)
     done = 0
 
-    def _process(ch: dict) -> tuple[str, str]:
+    def _process(ch: dict) -> tuple[str, str, str]:
         raw = _load_json(ch["story_path"])
         text = extract_chapter_text(raw)
         summary = summarize_chapter(
             ch["code"], ch["name"], ch["event_name"], ch["tag"], text,
         )
-        return ch["story_key"], summary
+        return ch["story_key"], summary, text
 
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENCY) as pool:
         futures = {pool.submit(_process, ch): ch for ch in chapters}
         for future in as_completed(futures):
             ch = futures[future]
             try:
-                key, summary = future.result()
+                key, summary, text = future.result()
                 summaries[key] = summary
+                full_texts[key] = text
                 done += 1
                 print(f"  [{done}/{total}] {ch['code']} {ch['name']} ({len(summary)} chars)")
             except Exception as exc:
                 print(f"  [{done}/{total}] {ch['code']} {ch['name']} FAILED: {exc}", file=sys.stderr)
 
-    return summaries
+    return summaries, full_texts
 
 
-def _run_event_summaries(
+def _run_event_summaries_v2(
     chapters: list[dict],
-    chapter_summaries: dict[str, str],
+    chapter_texts: dict[str, str],
 ) -> dict[str, str]:
-    """Generate per-event summaries from chapter summaries."""
-    # Group chapters by event
+    """Generate per-event summaries from full chapter dialogue (V2).
+
+    Groups chapters by event, concatenates their full dialogue text, and
+    sends the complete text to the LLM for cross-chapter narrative capture.
+    """
     events: dict[str, dict] = {}
     for ch in chapters:
         ev_id = ch["event_id"]
@@ -303,41 +316,46 @@ def _run_event_summaries(
             events[ev_id] = {
                 "event_name": ch["event_name"],
                 "chapters": [],
+                "total_chars": 0,
             }
-        summary = chapter_summaries.get(ch["story_key"], "")
-        events[ev_id]["chapters"].append({
-            "code": ch["code"],
-            "name": ch["name"],
-            "summary": summary,
-        })
+        text = chapter_texts.get(ch["story_key"], "")
+        if text:
+            header = f"--- {ch['code']}"
+            if ch.get("tag"):
+                header += f" [{ch['tag']}]"
+            header += f" {ch['name']} ---"
+            events[ev_id]["chapters"].append(header + "\n" + text)
+            events[ev_id]["total_chars"] += len(text)
 
     event_summaries: dict[str, str] = {}
     total = len(events)
     done = 0
 
-    for ev_id, ev_data in sorted(events.items()):
-        ch_list = ev_data["chapters"]
-        if len(ch_list) <= 1:
-            # Single-chapter events: use the chapter summary as event summary
-            event_summaries[ev_id] = ch_list[0]["summary"] if ch_list else ""
-            done += 1
-            continue
+    # Sort by chapter count descending — big events first while concurrency is fresh
+    sorted_events = sorted(events.items(), key=lambda x: len(x[1]["chapters"]), reverse=True)
 
-        parts = []
-        for ch_info in ch_list:
-            parts.append(f"{ch_info['code']} {ch_info['name']}：{ch_info['summary']}")
+    def _process(ev_id: str, ev_data: dict) -> tuple[str, str]:
+        if len(ev_data["chapters"]) <= 1:
+            # Single-chapter events: use the chapter text directly as the "summary"
+            text = ev_data["chapters"][0].split("\n", 1)[-1] if ev_data["chapters"] else ""
+            return ev_id, text[:800] if len(text) > 800 else text
+        full_text = "\n\n".join(ev_data["chapters"])
+        summary = summarize_event_v2(ev_data["event_name"], full_text)
+        return ev_id, summary
 
-        try:
-            summary = summarize_event(
-                ev_data["event_name"],
-                len(ch_list),
-                "\n\n".join(parts),
-            )
-            event_summaries[ev_id] = summary
-            done += 1
-            print(f"  [{done}/{total}] Event: {ev_data['event_name']} ({len(ch_list)} chapters, {len(summary)} chars)")
-        except Exception as exc:
-            print(f"  [{done}/{total}] Event: {ev_data['event_name']} FAILED: {exc}", file=sys.stderr)
+    with ThreadPoolExecutor(max_workers=MAX_CONCURRENCY) as pool:
+        futures = {pool.submit(_process, ev_id, ev_data): ev_id for ev_id, ev_data in sorted_events}
+        for future in as_completed(futures):
+            ev_id = futures[future]
+            ev_data = events[ev_id]
+            try:
+                result_id, summary = future.result()
+                event_summaries[result_id] = summary
+                done += 1
+                print(f"  [{done}/{total}] Event: {ev_data['event_name']} "
+                      f"({len(ev_data['chapters'])} chapters, {ev_data['total_chars']:,} chars input → {len(summary)} chars)")
+            except Exception as exc:
+                print(f"  [{done}/{total}] Event: {ev_data['event_name']} FAILED: {exc}", file=sys.stderr)
 
     return event_summaries
 
@@ -400,7 +418,7 @@ def main() -> None:
 
     # Per-chapter summaries
     print("\n--- Chapter summaries ---")
-    chapter_summaries = _run_chapter_summaries(chapters)
+    chapter_summaries, chapter_texts = _run_chapter_summaries(chapters)
 
     # Write chapter summaries
     summaries_path = args.output_dir / "summaries.json"
@@ -411,11 +429,11 @@ def main() -> None:
     )
     print(f"\nChapter summaries written to {summaries_path}")
 
-    # Per-event summaries
+    # Per-event summaries (V2 — from full dialogue)
     event_summaries: dict[str, str] = {}
     if not args.chapters_only:
-        print("\n--- Event summaries ---")
-        event_summaries = _run_event_summaries(chapters, chapter_summaries)
+        print("\n--- Event summaries (V2: full dialogue) ---")
+        event_summaries = _run_event_summaries_v2(chapters, chapter_texts)
 
         event_path = args.output_dir / "event_summaries.json"
         event_path.write_text(
