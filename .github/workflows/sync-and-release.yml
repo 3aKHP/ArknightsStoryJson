@@ -84,6 +84,22 @@ jobs:
           echo "Created zh_CN.zip:"
           ls -lh /tmp/zh_CN.zip
 
+      - name: Generate LLM chapter and event summaries
+        if: steps.check.outputs.needed == 'true'
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          if [ -z "${DEEPSEEK_API_KEY}" ]; then
+            echo "DEEPSEEK_API_KEY not set — skipping summarization step."
+            exit 0
+          fi
+
+          echo "Running summarization on zh_CN.zip..."
+          python scripts/summarize.py --zip /tmp/zh_CN.zip
+
+          echo "Zip updated with summaries:"
+          unzip -l /tmp/zh_CN.zip | grep -E "summaries|event_summaries"
+
       - name: Create GitHub Release and upload asset
         if: steps.check.outputs.needed == 'true'
         env:
