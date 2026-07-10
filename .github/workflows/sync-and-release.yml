@@ -303,18 +303,48 @@ jobs:
           print(p.read_text())
           PY
 
-      - name: Generate LLM chapter and event summaries
+      - name: Generate LLM chapter and event summaries (incremental)
         if: steps.decide.outputs.primary == 'true' || steps.decide.outputs.secondary == 'true'
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "${DEEPSEEK_API_KEY:-}" ]; then
-            echo "DEEPSEEK_API_KEY not set — skipping summarization step."
+
+          # Prefer previous release package as summary cache so only new
+          # chapters/events hit the LLM API.
+          CACHE_ARGS=()
+          mkdir -p /tmp/summary-cache
+          PREV_TAG=$(gh release list --repo "${{ github.repository }}" --limit 1 --json tagName --jq '.[0].tagName // ""' || true)
+          if [ -n "${PREV_TAG}" ]; then
+            echo "Trying summary cache from previous release: ${PREV_TAG}"
+            if gh release download "${PREV_TAG}" --repo "${{ github.repository }}" \
+              --pattern "zh_CN.zip" --dir /tmp/summary-cache 2>/dev/null; then
+              if [ -f /tmp/summary-cache/zh_CN.zip ]; then
+                CACHE_ARGS=(--cache-zip /tmp/summary-cache/zh_CN.zip)
+                echo "Cache zip ready: /tmp/summary-cache/zh_CN.zip"
+              fi
+            else
+              echo "No previous zh_CN.zip available for cache."
+            fi
+          else
+            echo "No previous release — first run will be full summarization if API key is set."
+          fi
+
+          if [ -z "${DEEPSEEK_API_KEY:-}" ] && [ ${#CACHE_ARGS[@]} -eq 0 ]; then
+            echo "DEEPSEEK_API_KEY not set and no cache — skipping summarization."
             exit 0
           fi
-          echo "Running summarization on zh_CN.zip..."
-          python scripts/summarize.py --zip /tmp/zh_CN.zip
+
+          echo "Running incremental summarization on zh_CN.zip..."
+          # Never block shipping story data on summarizer failures.
+          set +e
+          python scripts/summarize.py --zip /tmp/zh_CN.zip "${CACHE_ARGS[@]}"
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "Summarization exited ${rc} — continuing release."
+          fi
           unzip -l /tmp/zh_CN.zip | grep -E "summaries|event_summaries" || true
 
       - name: Create GitHub Release and upload assets
