@@ -2,8 +2,10 @@ name: Sync Upstream and Release
 
 on:
   schedule:
-    # Run daily at UTC 04:00
-    - cron: '0 4 * * *'
+    # A: catch major-version unpack (~06:15 CST)
+    - cron: '30 0 * * *'  # 08:30 CST
+    # B: catch minor flash-update (~16:00 CST)
+    - cron: '0 9 * * *'   # 17:00 CST
   workflow_dispatch:
 
 jobs:
