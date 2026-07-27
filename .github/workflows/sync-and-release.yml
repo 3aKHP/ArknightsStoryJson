@@ -273,6 +273,8 @@ jobs:
         env:
           GAMEDATA_SHA: ${{ steps.meta.outputs.gamedata_sha }}
           GAMEDATA_REPO: ${{ env.UPSTREAM_GAMEDATA_REPO }}
+          STORY_SHA: ${{ steps.meta.outputs.story_sha }}
+          STORY_ZH_CN_TREE: ${{ steps.meta.outputs.story_zh_cn_tree }}
         run: |
           set -euo pipefail
           python3 scripts/build_from_gamedata.py \
@@ -292,9 +294,10 @@ jobs:
           m = json.loads(p.read_text())
           m.update({
               "source": "secondary",
-              "story_repo": "",
-              "story_commit": "",
-              "story_zh_cn_tree": "",
+              # Preserve the primary source baseline for future change detection.
+              "story_repo": "050644zf/ArknightsStoryJson",
+              "story_commit": os.environ["STORY_SHA"],
+              "story_zh_cn_tree": os.environ["STORY_ZH_CN_TREE"],
               "gamedata_repo": os.environ["GAMEDATA_REPO"],
               "gamedata_commit": os.environ["GAMEDATA_SHA"],
               "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
