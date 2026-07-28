@@ -24,6 +24,10 @@ on:
           - primary
           - secondary
 
+concurrency:
+  group: story-release
+  cancel-in-progress: false
+
 env:
   UPSTREAM_STORY_REPO: 050644zf/ArknightsStoryJson
   UPSTREAM_GAMEDATA_REPO: Kengxxiao/ArknightsGameData
@@ -70,6 +74,13 @@ jobs:
           GD_REVIEW_SHA=$(sha256sum /tmp/gd_story_review_table.json | cut -d' ' -f1)
           echo "gamedata_review_sha256=${GD_REVIEW_SHA}" >> "$GITHUB_OUTPUT"
           echo "GameData story_review sha256: ${GD_REVIEW_SHA}"
+
+          curl -fsSL \
+            "https://raw.githubusercontent.com/${UPSTREAM_STORY_REPO}/${STORY_SHA}/zh_CN/gamedata/excel/story_review_table.json" \
+            -o /tmp/story_story_review_table.json
+          STORY_REVIEW_SHA=$(sha256sum /tmp/story_story_review_table.json | cut -d' ' -f1)
+          echo "story_review_sha256=${STORY_REVIEW_SHA}" >> "$GITHUB_OUTPUT"
+          echo "StoryJson story_review sha256: ${STORY_REVIEW_SHA}"
 
           TAG=$(gh release list --repo "${{ github.repository }}" --limit 1 --json tagName --jq '.[0].tagName // ""')
           echo "latest_tag=${TAG}" >> "$GITHUB_OUTPUT"
@@ -134,45 +145,25 @@ jobs:
           set -euo pipefail
 
           STORY_ZH_CN_TREE="${{ steps.meta.outputs.story_zh_cn_tree }}"
+          STORY_REVIEW="${{ steps.meta.outputs.story_review_sha256 }}"
           GD_REVIEW="${{ steps.meta.outputs.gamedata_review_sha256 }}"
           REL_ZH_CN_TREE="${{ steps.meta.outputs.release_zh_cn_tree }}"
           REL_REVIEW="${{ steps.meta.outputs.release_review_sha256 }}"
 
+          SOURCE=$(python3 scripts/select_source.py \
+            --story-tree "${STORY_ZH_CN_TREE}" \
+            --story-review "${STORY_REVIEW}" \
+            --gamedata-review "${GD_REVIEW}" \
+            --release-tree "${REL_ZH_CN_TREE}" \
+            --release-review "${REL_REVIEW}" \
+            --force "${FORCE_SOURCE}")
           PRIMARY=false
           SECONDARY=false
-
-          # Primary only when community zh_CN content tree actually changed.
-          # Non-zh_CN commits (en_US/ja_JP/...) must not trigger a primary release.
-          if [ -n "${STORY_ZH_CN_TREE}" ]; then
-            if [ -z "${REL_ZH_CN_TREE}" ] && [ -z "${REL_REVIEW}" ]; then
-              # No prior release fingerprints at all → bootstrap via primary.
-              PRIMARY=true
-            elif [ -n "${REL_ZH_CN_TREE}" ] && [ "${STORY_ZH_CN_TREE}" != "${REL_ZH_CN_TREE}" ]; then
-              PRIMARY=true
-            fi
-          fi
-
-          # Secondary when GameData story_review is ahead and primary is not selected.
-          if [ "${PRIMARY}" != "true" ]; then
-            if [ -z "${REL_REVIEW}" ] || [ "${GD_REVIEW}" != "${REL_REVIEW}" ]; then
-              SECONDARY=true
-            fi
-          fi
-
-          case "${FORCE_SOURCE}" in
-            primary)
-              PRIMARY=true
-              SECONDARY=false
-              ;;
-            secondary)
-              PRIMARY=false
-              SECONDARY=true
-              ;;
-            auto) ;;
-            *)
-              echo "Unknown force_source=${FORCE_SOURCE}"
-              exit 1
-              ;;
+          case "${SOURCE}" in
+            primary) PRIMARY=true ;;
+            secondary) SECONDARY=true ;;
+            none) ;;
+            *) echo "Unexpected source decision: ${SOURCE}"; exit 1 ;;
           esac
 
           {
@@ -209,7 +200,7 @@ jobs:
             --exclude "*.zip"
           ls -lh /tmp/zh_CN.zip
 
-      - name: "[primary] Write manifest"
+      - name: "[primary] Write source manifest"
         if: steps.decide.outputs.primary == 'true'
         env:
           STORY_SHA: ${{ steps.meta.outputs.story_sha }}
@@ -219,23 +210,18 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           import hashlib, json, os, zipfile
-          from datetime import datetime, timezone
           from pathlib import Path
 
           zpath = Path("/tmp/zh_CN.zip")
           with zipfile.ZipFile(zpath) as zf:
               review = zf.read("zh_CN/gamedata/excel/story_review_table.json")
           manifest = {
-              "schema_version": 1,
               "source": "primary",
               "story_repo": os.environ["STORY_REPO"],
               "story_commit": os.environ["STORY_SHA"],
               "story_zh_cn_tree": os.environ["STORY_ZH_CN_TREE"],
               "gamedata_commit": "",
               "story_review_sha256": hashlib.sha256(review).hexdigest(),
-              "zip_sha256": hashlib.sha256(zpath.read_bytes()).hexdigest(),
-              "zip_bytes": zpath.stat().st_size,
-              "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
           }
           Path("/tmp/manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
           print(json.dumps(manifest, indent=2, ensure_ascii=False))
@@ -350,7 +336,24 @@ jobs:
           fi
           unzip -l /tmp/zh_CN.zip | grep -E "summaries|event_summaries" || true
 
-      - name: Create GitHub Release and upload assets
+      - name: Validate final package and finalize manifest
+        if: steps.decide.outputs.primary == 'true' || steps.decide.outputs.secondary == 'true'
+        run: |
+          set -euo pipefail
+          PREVIOUS_ARGS=()
+          if [ -f /tmp/latest-release/manifest.json ]; then
+            PREVIOUS_ARGS=(--previous-manifest /tmp/latest-release/manifest.json)
+          fi
+          python3 scripts/release_gate.py finalize \
+            --zip /tmp/zh_CN.zip \
+            --manifest /tmp/manifest.json \
+            "${PREVIOUS_ARGS[@]}"
+          python3 scripts/release_gate.py verify \
+            --zip /tmp/zh_CN.zip \
+            --manifest /tmp/manifest.json \
+            "${PREVIOUS_ARGS[@]}"
+
+      - name: Stage, verify, and publish GitHub Release
         if: steps.decide.outputs.primary == 'true' || steps.decide.outputs.secondary == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -377,8 +380,13 @@ jobs:
           RELEASE_NAME="${TITLE_PREFIX} ${RELEASE_DATE}"
 
           if gh release view "${RELEASE_TAG}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "Release ${RELEASE_TAG} already exists; skipping create."
-            exit 0
+            IS_DRAFT=$(gh release view "${RELEASE_TAG}" --repo "${{ github.repository }}" --json isDraft --jq .isDraft)
+            if [ "${IS_DRAFT}" != "true" ]; then
+              echo "Published release ${RELEASE_TAG} already exists; skipping create."
+              exit 0
+            fi
+            echo "Removing stale draft ${RELEASE_TAG} before retry."
+            gh release delete "${RELEASE_TAG}" --repo "${{ github.repository }}" --yes --cleanup-tag
           fi
 
           cat > /tmp/release_notes.md <<EOF
@@ -394,7 +402,21 @@ jobs:
 
           gh release create "${RELEASE_TAG}" \
             --repo "${{ github.repository }}" \
+            --draft \
             --title "${RELEASE_NAME}" \
             --notes-file /tmp/release_notes.md \
             /tmp/zh_CN.zip \
             /tmp/manifest.json
+
+          rm -rf /tmp/release-verify
+          mkdir -p /tmp/release-verify
+          gh release download "${RELEASE_TAG}" \
+            --repo "${{ github.repository }}" \
+            --dir /tmp/release-verify
+          python3 scripts/release_gate.py verify \
+            --zip /tmp/release-verify/zh_CN.zip \
+            --manifest /tmp/release-verify/manifest.json
+          gh release edit "${RELEASE_TAG}" \
+            --repo "${{ github.repository }}" \
+            --draft=false \
+            --latest
