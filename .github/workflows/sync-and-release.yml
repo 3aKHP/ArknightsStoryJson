@@ -82,7 +82,7 @@ jobs:
           echo "story_review_sha256=${STORY_REVIEW_SHA}" >> "$GITHUB_OUTPUT"
           echo "StoryJson story_review sha256: ${STORY_REVIEW_SHA}"
 
-          TAG=$(gh release list --repo "${{ github.repository }}" --limit 1 --json tagName --jq '.[0].tagName // ""')
+          TAG=$(gh release list --repo "${{ github.repository }}" --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName // ""')
           echo "latest_tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "Latest release tag: ${TAG:-<none>}"
 
@@ -304,7 +304,7 @@ jobs:
           # chapters/events hit the LLM API.
           CACHE_ARGS=()
           mkdir -p /tmp/summary-cache
-          PREV_TAG=$(gh release list --repo "${{ github.repository }}" --limit 1 --json tagName --jq '.[0].tagName // ""' || true)
+          PREV_TAG=$(gh release list --repo "${{ github.repository }}" --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName // ""' || true)
           if [ -n "${PREV_TAG}" ]; then
             echo "Trying summary cache from previous release: ${PREV_TAG}"
             if gh release download "${PREV_TAG}" --repo "${{ github.repository }}" \
@@ -366,12 +366,12 @@ jobs:
 
           if [ "${PRIMARY}" = "true" ]; then
             SOURCE=primary
-            RELEASE_TAG="upstream-${STORY_SHA}"
+            RELEASE_TAG="upstream-${STORY_SHA}-v2"
             TITLE_PREFIX="Story Data"
             NOTES_EXTRA="Primary source: \`${UPSTREAM_STORY_REPO}\` @ \`${STORY_SHA}\` (zh_CN tree \`${STORY_ZH_CN_TREE}\`)."
           else
             SOURCE=secondary
-            RELEASE_TAG="gamedata-${GAMEDATA_SHA}"
+            RELEASE_TAG="gamedata-${GAMEDATA_SHA}-v2"
             TITLE_PREFIX="Story Data (GameData/ASTR)"
             NOTES_EXTRA="Secondary source: built from \`${UPSTREAM_GAMEDATA_REPO}\` @ \`${GAMEDATA_SHA}\` via \`${ASTR_REPO}\` @ \`${ASTR_SHA:-$ASTR_REF}\`."
           fi
