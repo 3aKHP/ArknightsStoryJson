@@ -415,7 +415,8 @@ jobs:
             --dir /tmp/release-verify
           python3 scripts/release_gate.py verify \
             --zip /tmp/release-verify/zh_CN.zip \
-            --manifest /tmp/release-verify/manifest.json
+            --manifest /tmp/release-verify/manifest.json \
+            --previous-manifest /tmp/latest-release/manifest.json
           gh release edit "${RELEASE_TAG}" \
             --repo "${{ github.repository }}" \
             --draft=false \

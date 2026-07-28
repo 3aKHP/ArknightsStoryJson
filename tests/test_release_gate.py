@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from scripts.release_gate import finalize_manifest, verify_manifest
+from scripts.release_gate import check_regression, finalize_manifest, verify_manifest
 
 
 def write_story_zip(path: Path, *, chapters: int = 2, invalid_json: bool = False) -> None:
@@ -72,6 +72,24 @@ class ReleaseGateTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "chapters regressed"):
             finalize_manifest(self.zip_path, self.manifest_path, previous)
+
+    def test_each_release_metric_regression_is_rejected(self) -> None:
+        for field in ("events", "chapters", "json_files"):
+            with self.subTest(field=field):
+                metrics = {"events": 10, "chapters": 10, "json_files": 10}
+                previous = {"events": 10, "chapters": 10, "json_files": 10}
+                previous[field] = 20
+                with self.assertRaisesRegex(ValueError, rf"{field} regressed"):
+                    check_regression(metrics, previous)
+
+    def test_all_regressions_are_reported_together(self) -> None:
+        metrics = {"events": 1, "chapters": 2, "json_files": 4}
+        previous = {"events": 10, "chapters": 20, "json_files": 40}
+        with self.assertRaises(ValueError) as raised:
+            check_regression(metrics, previous)
+        message = str(raised.exception)
+        for field in metrics:
+            self.assertIn(f"{field} regressed", message)
 
 
 if __name__ == "__main__":

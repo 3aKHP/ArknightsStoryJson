@@ -107,13 +107,18 @@ def _load_manifest(path: Path) -> dict[str, Any]:
 def check_regression(metrics: dict[str, int | str], previous: dict[str, Any] | None) -> None:
     if not previous:
         return
+    regressions: list[str] = []
     for field in ("events", "chapters", "json_files"):
         old = previous.get(field)
         new = metrics[field]
         if isinstance(old, int) and old > 0 and isinstance(new, int):
             minimum = int(old * (1 - MAX_COUNT_DROP_FRACTION))
             if new < minimum:
-                raise ValueError(f"{field} regressed from {old} to {new} (minimum {minimum})")
+                regressions.append(
+                    f"{field} regressed from {old} to {new} (minimum {minimum})"
+                )
+    if regressions:
+        raise ValueError("regressions: " + "; ".join(regressions))
 
 
 def finalize_manifest(

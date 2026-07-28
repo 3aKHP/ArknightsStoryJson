@@ -53,6 +53,19 @@ class SelectSourceTests(unittest.TestCase):
                 force="primary",
             )
 
+    def test_forced_secondary_does_not_require_primary_fingerprint(self) -> None:
+        self.assertEqual(
+            select_source(
+                story_tree="",
+                story_review="",
+                gamedata_review="review-b",
+                release_tree="",
+                release_review="review-a",
+                force="secondary",
+            ),
+            "secondary",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

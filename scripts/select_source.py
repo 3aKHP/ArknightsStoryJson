@@ -22,8 +22,12 @@ def select_source(
     """Return the source that can advance without publishing stale metadata."""
     if force not in {"auto", "primary", "secondary"}:
         raise ValueError(f"unknown force source: {force}")
-    if not story_review or not gamedata_review:
-        raise ValueError("source story_review fingerprints must not be empty")
+    if not gamedata_review:
+        raise ValueError("GameData story_review fingerprint must not be empty")
+    if force == "secondary":
+        return "secondary"
+    if not story_review:
+        raise ValueError("StoryJson story_review fingerprint must not be empty")
 
     primary_current = story_review == gamedata_review
     primary_changed = bool(story_tree) and story_tree != release_tree
@@ -34,9 +38,6 @@ def select_source(
                 "refusing forced primary release: its story_review differs from GameData"
             )
         return "primary"
-    if force == "secondary":
-        return "secondary"
-
     if primary_changed and primary_current:
         return "primary"
     if gamedata_review != release_review:
