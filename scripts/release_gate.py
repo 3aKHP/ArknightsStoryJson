@@ -50,7 +50,8 @@ def inspect_story_zip(zip_path: Path) -> dict[str, int | str]:
             if missing:
                 raise ValueError(f"missing required entries: {missing}")
 
-            review = _load_json(archive.read(REVIEW_TABLE), REVIEW_TABLE)
+            review_bytes = archive.read(REVIEW_TABLE)
+            review = _load_json(review_bytes, REVIEW_TABLE)
             story_info = _load_json(archive.read(STORY_INFO), STORY_INFO)
             if not isinstance(review, dict) or not review:
                 raise ValueError("story_review_table.json must be a non-empty object")
@@ -89,6 +90,7 @@ def inspect_story_zip(zip_path: Path) -> dict[str, int | str]:
     return {
         "zip_sha256": sha256_file(zip_path),
         "zip_bytes": zip_path.stat().st_size,
+        "story_review_sha256": hashlib.sha256(review_bytes).hexdigest(),
         "events": len(review),
         "chapters": len(referenced),
         "json_files": json_files,

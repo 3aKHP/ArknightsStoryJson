@@ -46,6 +46,13 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertEqual(manifest["chapters"], 2)
         verify_manifest(self.zip_path, self.manifest_path)
 
+        tampered = dict(manifest)
+        tampered["story_review_sha256"] = "0" * 64
+        self.manifest_path.write_text(json.dumps(tampered), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "story_review_sha256 mismatch"):
+            verify_manifest(self.zip_path, self.manifest_path)
+        self.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
         with ZipFile(self.zip_path, "a") as archive:
             archive.writestr("zh_CN/summaries.json", "{}")
         with self.assertRaisesRegex(ValueError, "mismatch"):
