@@ -1,10 +1,4 @@
-name: Sync Upstream and Release
-
-# Dual-source (primary / secondary) strategy:
-#   Primary:   mirror 050644zf/ArknightsStoryJson when its zh_CN tree changes
-#   Secondary: build zh_CN.zip from Kengxxiao GameData via ASTR-Script when
-#              GameData story_review is ahead of the latest release and primary
-#              is not shipping this run (community StoryJson lagging after CN update)
+name: Sync AKDP and Release
 
 on:
   schedule:
@@ -14,25 +8,18 @@ on:
     - cron: '0 9 * * *'   # 17:00 CST
   workflow_dispatch:
     inputs:
-      force_source:
-        description: "Force a source path (auto / primary / secondary)"
+      force_release:
+        description: "Re-download and re-verify the current AKDP release"
         required: false
-        default: auto
-        type: choice
-        options:
-          - auto
-          - primary
-          - secondary
+        default: false
+        type: boolean
 
 concurrency:
   group: story-release
   cancel-in-progress: false
 
 env:
-  UPSTREAM_STORY_REPO: 050644zf/ArknightsStoryJson
-  UPSTREAM_GAMEDATA_REPO: Kengxxiao/ArknightsGameData
-  ASTR_REPO: 050644zf/ASTR-Script
-  ASTR_REF: main
+  AKDP_REPO: 3aKHP/arknights-data-pipeline
 
 jobs:
   check-and-release:
@@ -41,383 +28,183 @@ jobs:
       contents: write
 
     steps:
-      - name: Checkout fork (main)
+      - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
-      - name: Resolve upstream SHAs and content fingerprints
-        id: meta
+      - name: Resolve latest AKDP release
+        id: akdp
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-
-          STORY_SHA=$(git ls-remote "https://github.com/${UPSTREAM_STORY_REPO}.git" HEAD | cut -f1)
-          GAMEDATA_SHA=$(git ls-remote "https://github.com/${UPSTREAM_GAMEDATA_REPO}.git" refs/heads/master | cut -f1)
-          {
-            echo "story_sha=${STORY_SHA}"
-            echo "gamedata_sha=${GAMEDATA_SHA}"
-          } >> "$GITHUB_OUTPUT"
-          echo "Upstream StoryJson HEAD: ${STORY_SHA}"
-          echo "Upstream GameData master: ${GAMEDATA_SHA}"
-
-          STORY_TREE=$(gh api "repos/${UPSTREAM_STORY_REPO}/commits/${STORY_SHA}" --jq '.commit.tree.sha')
-          STORY_ZH_CN_TREE=$(gh api "repos/${UPSTREAM_STORY_REPO}/git/trees/${STORY_TREE}" \
-            --jq '.tree[] | select(.path=="zh_CN") | .sha')
-          echo "story_zh_cn_tree=${STORY_ZH_CN_TREE}" >> "$GITHUB_OUTPUT"
-          echo "StoryJson zh_CN tree: ${STORY_ZH_CN_TREE}"
-
-          curl -fsSL \
-            "https://raw.githubusercontent.com/${UPSTREAM_GAMEDATA_REPO}/${GAMEDATA_SHA}/zh_CN/gamedata/excel/story_review_table.json" \
-            -o /tmp/gd_story_review_table.json
-          GD_REVIEW_SHA=$(sha256sum /tmp/gd_story_review_table.json | cut -d' ' -f1)
-          echo "gamedata_review_sha256=${GD_REVIEW_SHA}" >> "$GITHUB_OUTPUT"
-          echo "GameData story_review sha256: ${GD_REVIEW_SHA}"
-
-          curl -fsSL \
-            "https://raw.githubusercontent.com/${UPSTREAM_STORY_REPO}/${STORY_SHA}/zh_CN/gamedata/excel/story_review_table.json" \
-            -o /tmp/story_story_review_table.json
-          STORY_REVIEW_SHA=$(sha256sum /tmp/story_story_review_table.json | cut -d' ' -f1)
-          echo "story_review_sha256=${STORY_REVIEW_SHA}" >> "$GITHUB_OUTPUT"
-          echo "StoryJson story_review sha256: ${STORY_REVIEW_SHA}"
-
-          TAG=$(gh release list --repo "${{ github.repository }}" --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName // ""')
-          echo "latest_tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "Latest release tag: ${TAG:-<none>}"
-
-          RELEASE_REVIEW_SHA=""
-          RELEASE_ZH_CN_TREE=""
-          RELEASE_SOURCE=""
-          RELEASE_STORY_SHA=""
-          RELEASE_GAMEDATA_SHA=""
-
-          if [ -n "${TAG}" ]; then
-            mkdir -p /tmp/latest-release
-            gh release download "${TAG}" --repo "${{ github.repository }}" --pattern "manifest.json" --dir /tmp/latest-release 2>/dev/null || true
-            if [ -f /tmp/latest-release/manifest.json ]; then
-              RELEASE_SOURCE=$(python3 -c 'import json;print(json.load(open("/tmp/latest-release/manifest.json")).get("source",""))')
-              RELEASE_STORY_SHA=$(python3 -c 'import json;print(json.load(open("/tmp/latest-release/manifest.json")).get("story_commit",""))')
-              RELEASE_GAMEDATA_SHA=$(python3 -c 'import json;print(json.load(open("/tmp/latest-release/manifest.json")).get("gamedata_commit",""))')
-              RELEASE_ZH_CN_TREE=$(python3 -c 'import json;print(json.load(open("/tmp/latest-release/manifest.json")).get("story_zh_cn_tree",""))')
-              RELEASE_REVIEW_SHA=$(python3 -c 'import json;print(json.load(open("/tmp/latest-release/manifest.json")).get("story_review_sha256",""))')
-            fi
-
-            if [ -z "${RELEASE_REVIEW_SHA}" ]; then
-              gh release download "${TAG}" --repo "${{ github.repository }}" --pattern "zh_CN.zip" --dir /tmp/latest-release 2>/dev/null || true
-              if [ -f /tmp/latest-release/zh_CN.zip ]; then
-                RELEASE_REVIEW_SHA=$(python3 -c 'import hashlib,zipfile;from pathlib import Path;z=zipfile.ZipFile(Path("/tmp/latest-release/zh_CN.zip"));d=z.read("zh_CN/gamedata/excel/story_review_table.json");print(hashlib.sha256(d).hexdigest())')
-              fi
-            fi
-
-            if [ -z "${RELEASE_STORY_SHA}" ] && [[ "${TAG}" == upstream-* ]]; then
-              RELEASE_STORY_SHA="${TAG#upstream-}"
-              RELEASE_SOURCE="${RELEASE_SOURCE:-primary-legacy}"
-            fi
-            if [ -z "${RELEASE_GAMEDATA_SHA}" ] && [[ "${TAG}" == gamedata-* ]]; then
-              RELEASE_GAMEDATA_SHA="${TAG#gamedata-}"
-              RELEASE_SOURCE="${RELEASE_SOURCE:-secondary-legacy}"
-            fi
-
-            # Legacy primary tags: resolve zh_CN tree from the tagged story commit.
-            if [ -z "${RELEASE_ZH_CN_TREE}" ] && [ -n "${RELEASE_STORY_SHA}" ]; then
-              if REL_TREE=$(gh api "repos/${UPSTREAM_STORY_REPO}/commits/${RELEASE_STORY_SHA}" --jq '.commit.tree.sha' 2>/dev/null); then
-                RELEASE_ZH_CN_TREE=$(gh api "repos/${UPSTREAM_STORY_REPO}/git/trees/${REL_TREE}" \
-                  --jq '.tree[] | select(.path=="zh_CN") | .sha' 2>/dev/null || true)
-              fi
-            fi
+          AKDP_TAG=$(gh release list --repo "${AKDP_REPO}" --exclude-drafts --limit 1 \
+            --json tagName --jq '.[0].tagName')
+          if [ -z "${AKDP_TAG}" ]; then
+            echo "No non-draft AKDP release found."
+            exit 1
           fi
+          echo "tag=${AKDP_TAG}" >> "$GITHUB_OUTPUT"
 
-          {
-            echo "release_source=${RELEASE_SOURCE}"
-            echo "release_story_sha=${RELEASE_STORY_SHA}"
-            echo "release_gamedata_sha=${RELEASE_GAMEDATA_SHA}"
-            echo "release_zh_cn_tree=${RELEASE_ZH_CN_TREE}"
-            echo "release_review_sha256=${RELEASE_REVIEW_SHA}"
-          } >> "$GITHUB_OUTPUT"
-          echo "Release source=${RELEASE_SOURCE:-unknown} review=${RELEASE_REVIEW_SHA:-none} zh_cn_tree=${RELEASE_ZH_CN_TREE:-none}"
+          mkdir -p /tmp/akdp
+          gh release download "${AKDP_TAG}" --repo "${AKDP_REPO}" \
+            --pattern manifest.json --dir /tmp/akdp
 
-      - name: Decide primary vs secondary
-        id: decide
+          VERSION_ID=$(python3 -c \
+            "import json; print(json.load(open('/tmp/akdp/manifest.json'))['source']['versionId'])")
+          COMPAT_TAG="akdp-${VERSION_ID}-v1"
+          echo "version_id=${VERSION_ID}" >> "$GITHUB_OUTPUT"
+          echo "compat_tag=${COMPAT_TAG}" >> "$GITHUB_OUTPUT"
+          echo "AKDP release: ${AKDP_TAG}  compat tag: ${COMPAT_TAG}"
+
+      - name: Check if update is needed
+        id: check
         env:
-          FORCE_SOURCE: ${{ github.event.inputs.force_source || 'auto' }}
-        run: |
-          set -euo pipefail
-
-          STORY_ZH_CN_TREE="${{ steps.meta.outputs.story_zh_cn_tree }}"
-          STORY_REVIEW="${{ steps.meta.outputs.story_review_sha256 }}"
-          GD_REVIEW="${{ steps.meta.outputs.gamedata_review_sha256 }}"
-          REL_ZH_CN_TREE="${{ steps.meta.outputs.release_zh_cn_tree }}"
-          REL_REVIEW="${{ steps.meta.outputs.release_review_sha256 }}"
-
-          SOURCE=$(python3 scripts/select_source.py \
-            --story-tree "${STORY_ZH_CN_TREE}" \
-            --story-review "${STORY_REVIEW}" \
-            --gamedata-review "${GD_REVIEW}" \
-            --release-tree "${REL_ZH_CN_TREE}" \
-            --release-review "${REL_REVIEW}" \
-            --force "${FORCE_SOURCE}")
-          PRIMARY=false
-          SECONDARY=false
-          case "${SOURCE}" in
-            primary) PRIMARY=true ;;
-            secondary) SECONDARY=true ;;
-            none) ;;
-            *) echo "Unexpected source decision: ${SOURCE}"; exit 1 ;;
-          esac
-
-          {
-            echo "primary=${PRIMARY}"
-            echo "secondary=${SECONDARY}"
-          } >> "$GITHUB_OUTPUT"
-          echo "Decision: primary=${PRIMARY} secondary=${SECONDARY} force=${FORCE_SOURCE}"
-
-          if [ "${PRIMARY}" != "true" ] && [ "${SECONDARY}" != "true" ]; then
-            echo "No update needed."
-          fi
-
-      - name: "[primary] Fetch upstream zh_CN"
-        if: steps.decide.outputs.primary == 'true'
-        run: |
-          set -euo pipefail
-          git remote add upstream "https://github.com/${UPSTREAM_STORY_REPO}.git" 2>/dev/null || true
-          git fetch upstream main --depth=1
-          rm -rf /tmp/upstream_zh_CN
-          mkdir -p /tmp/upstream_zh_CN
-          git checkout upstream/main -- zh_CN
-          cp -a zh_CN /tmp/upstream_zh_CN/zh_CN
-
-      - name: "[primary] Create zh_CN.zip"
-        if: steps.decide.outputs.primary == 'true'
-        run: |
-          set -euo pipefail
-          cd /tmp/upstream_zh_CN
-          zip -qr /tmp/zh_CN.zip zh_CN \
-            --exclude "*/ProcessStep*.py" \
-            --exclude "*/Processed_Stories/*" \
-            --exclude "*_FULL.jsonl" \
-            --exclude "*_FULL.md" \
-            --exclude "*.zip"
-          ls -lh /tmp/zh_CN.zip
-
-      - name: "[primary] Write source manifest"
-        if: steps.decide.outputs.primary == 'true'
-        env:
-          STORY_SHA: ${{ steps.meta.outputs.story_sha }}
-          STORY_ZH_CN_TREE: ${{ steps.meta.outputs.story_zh_cn_tree }}
-          STORY_REPO: ${{ env.UPSTREAM_STORY_REPO }}
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import hashlib, json, os, zipfile
-          from pathlib import Path
-
-          zpath = Path("/tmp/zh_CN.zip")
-          with zipfile.ZipFile(zpath) as zf:
-              review = zf.read("zh_CN/gamedata/excel/story_review_table.json")
-          manifest = {
-              "source": "primary",
-              "story_repo": os.environ["STORY_REPO"],
-              "story_commit": os.environ["STORY_SHA"],
-              "story_zh_cn_tree": os.environ["STORY_ZH_CN_TREE"],
-              "gamedata_commit": "",
-              "story_review_sha256": hashlib.sha256(review).hexdigest(),
-          }
-          Path("/tmp/manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
-          print(json.dumps(manifest, indent=2, ensure_ascii=False))
-          PY
-
-      - name: "[secondary] Checkout GameData (sparse story+excel)"
-        if: steps.decide.outputs.secondary == 'true'
-        run: |
-          set -euo pipefail
-          rm -rf /tmp/ArknightsGameData
-          mkdir -p /tmp/ArknightsGameData
-          cd /tmp/ArknightsGameData
-          git init -q
-          git remote add origin "https://github.com/${UPSTREAM_GAMEDATA_REPO}.git"
-          git config core.sparseCheckout true
-          git config core.sparseCheckoutCone false
-          printf '%s\n' 'zh_CN/gamedata/excel/' 'zh_CN/gamedata/story/' > .git/info/sparse-checkout
-          git fetch --depth 1 origin "${{ steps.meta.outputs.gamedata_sha }}"
-          git checkout FETCH_HEAD
-          ln -sfn zh_CN cn
-          du -sh zh_CN/gamedata/excel zh_CN/gamedata/story
-
-      - name: "[secondary] Checkout ASTR-Script"
-        if: steps.decide.outputs.secondary == 'true'
-        run: |
-          set -euo pipefail
-          rm -rf /tmp/ASTR-Script
-          git clone --depth 1 --branch "${ASTR_REF}" "https://github.com/${ASTR_REPO}.git" /tmp/ASTR-Script
-          ASTR_SHA=$(git -C /tmp/ASTR-Script rev-parse HEAD)
-          echo "ASTR_SHA=${ASTR_SHA}" >> "$GITHUB_ENV"
-          echo "ASTR-Script @ ${ASTR_SHA}"
-
-      - name: "[secondary] Build zh_CN.zip via ASTR"
-        if: steps.decide.outputs.secondary == 'true'
-        env:
-          GAMEDATA_SHA: ${{ steps.meta.outputs.gamedata_sha }}
-          GAMEDATA_REPO: ${{ env.UPSTREAM_GAMEDATA_REPO }}
-          STORY_SHA: ${{ steps.meta.outputs.story_sha }}
-          STORY_ZH_CN_TREE: ${{ steps.meta.outputs.story_zh_cn_tree }}
-        run: |
-          set -euo pipefail
-          python3 scripts/build_from_gamedata.py \
-            --gamedata-root /tmp/ArknightsGameData \
-            --astr-root /tmp/ASTR-Script \
-            --output-dir /tmp/story-build/zh_CN \
-            --output-zip /tmp/zh_CN.zip \
-            --manifest /tmp/manifest.json \
-            --gamedata-commit "${GAMEDATA_SHA}" \
-            --astr-ref "${ASTR_SHA}"
-          python3 - <<'PY'
-          import json, os
-          from datetime import datetime, timezone
-          from pathlib import Path
-
-          p = Path("/tmp/manifest.json")
-          m = json.loads(p.read_text())
-          m.update({
-              "source": "secondary",
-              # Preserve the primary source baseline for future change detection.
-              "story_repo": "050644zf/ArknightsStoryJson",
-              "story_commit": os.environ["STORY_SHA"],
-              "story_zh_cn_tree": os.environ["STORY_ZH_CN_TREE"],
-              "gamedata_repo": os.environ["GAMEDATA_REPO"],
-              "gamedata_commit": os.environ["GAMEDATA_SHA"],
-              "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-          })
-          p.write_text(json.dumps(m, ensure_ascii=False, indent=2) + "\n")
-          print(p.read_text())
-          PY
-
-      - name: Generate LLM chapter and event summaries (incremental)
-        if: steps.decide.outputs.primary == 'true' || steps.decide.outputs.secondary == 'true'
-        env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMPAT_TAG: ${{ steps.akdp.outputs.compat_tag }}
+          FORCE_RELEASE: ${{ github.event.inputs.force_release || 'false' }}
         run: |
           set -euo pipefail
 
-          # Prefer previous release package as summary cache so only new
-          # chapters/events hit the LLM API.
-          CACHE_ARGS=()
-          mkdir -p /tmp/summary-cache
-          PREV_TAG=$(gh release list --repo "${{ github.repository }}" --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName // ""' || true)
-          if [ -n "${PREV_TAG}" ]; then
-            echo "Trying summary cache from previous release: ${PREV_TAG}"
-            if gh release download "${PREV_TAG}" --repo "${{ github.repository }}" \
-              --pattern "zh_CN.zip" --dir /tmp/summary-cache 2>/dev/null; then
-              if [ -f /tmp/summary-cache/zh_CN.zip ]; then
-                CACHE_ARGS=(--cache-zip /tmp/summary-cache/zh_CN.zip)
-                echo "Cache zip ready: /tmp/summary-cache/zh_CN.zip"
-              fi
-            else
-              echo "No previous zh_CN.zip available for cache."
+          if gh release view "${COMPAT_TAG}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            IS_DRAFT=$(gh release view "${COMPAT_TAG}" --repo "${{ github.repository }}" \
+              --json isDraft --jq .isDraft)
+            if [ "${IS_DRAFT}" != "true" ] && [ "${FORCE_RELEASE}" != "true" ]; then
+              echo "No update needed: ${COMPAT_TAG} is already published."
+              echo "needed=false" >> "$GITHUB_OUTPUT"
+              exit 0
             fi
-          else
-            echo "No previous release — first run will be full summarization if API key is set."
+            echo "${COMPAT_TAG} exists (draft=${IS_DRAFT}, force=${FORCE_RELEASE}); will re-verify."
           fi
+          echo "needed=true" >> "$GITHUB_OUTPUT"
 
-          if [ -z "${DEEPSEEK_API_KEY:-}" ] && [ ${#CACHE_ARGS[@]} -eq 0 ]; then
-            echo "DEEPSEEK_API_KEY not set and no cache — skipping summarization."
-            exit 0
-          fi
-
-          echo "Running incremental summarization on zh_CN.zip..."
-          # Never block shipping story data on summarizer failures.
-          set +e
-          python scripts/summarize.py --zip /tmp/zh_CN.zip "${CACHE_ARGS[@]}"
-          rc=$?
-          set -e
-          if [ "$rc" -ne 0 ]; then
-            echo "Summarization exited ${rc} — continuing release."
-          fi
-          unzip -l /tmp/zh_CN.zip | grep -E "summaries|event_summaries" || true
-
-      - name: Validate final package and finalize manifest
-        if: steps.decide.outputs.primary == 'true' || steps.decide.outputs.secondary == 'true'
+      - name: Download and verify AKDP story asset
+        if: steps.check.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AKDP_TAG: ${{ steps.akdp.outputs.tag }}
         run: |
           set -euo pipefail
+          mkdir -p /tmp/assets
+          gh release download "${AKDP_TAG}" --repo "${AKDP_REPO}" \
+            --pattern manifest.json \
+            --pattern zh_CN.zip \
+            --dir /tmp/assets
+
+          python3 scripts/akdp_source.py verify \
+            --factory-manifest /tmp/assets/manifest.json \
+            --asset "zh_CN.zip=/tmp/assets/zh_CN.zip"
+
+          echo "Verified AKDP assets:"
+          ls -lh /tmp/assets
+
+      - name: Build manifest and run release gate
+        if: steps.check.outputs.needed == 'true'
+        run: |
+          set -euo pipefail
+          python3 scripts/akdp_source.py provenance \
+            --factory-manifest /tmp/assets/manifest.json \
+            --contract prts-story-v1 > /tmp/provenance.json
+
+          # Seed the compat manifest with factory provenance fields.
+          cp /tmp/provenance.json /tmp/manifest.json
+
+          # Fetch previous release manifest for regression check.
+          mkdir -p /tmp/latest-release
+          PREV_TAG=$(gh release list --repo "${{ github.repository }}" --exclude-drafts \
+            --limit 1 --json tagName --jq '.[0].tagName // ""')
           PREVIOUS_ARGS=()
-          if [ -f /tmp/latest-release/manifest.json ]; then
-            PREVIOUS_ARGS=(--previous-manifest /tmp/latest-release/manifest.json)
+          if [ -n "${PREV_TAG}" ]; then
+            gh release download "${PREV_TAG}" --repo "${{ github.repository }}" \
+              --pattern manifest.json --dir /tmp/latest-release 2>/dev/null || true
+            if [ -f /tmp/latest-release/manifest.json ]; then
+              PREVIOUS_ARGS=(--previous-manifest /tmp/latest-release/manifest.json)
+            fi
           fi
+
           python3 scripts/release_gate.py finalize \
-            --zip /tmp/zh_CN.zip \
+            --zip /tmp/assets/zh_CN.zip \
             --manifest /tmp/manifest.json \
             "${PREVIOUS_ARGS[@]}"
           python3 scripts/release_gate.py verify \
-            --zip /tmp/zh_CN.zip \
+            --zip /tmp/assets/zh_CN.zip \
             --manifest /tmp/manifest.json \
             "${PREVIOUS_ARGS[@]}"
-
-      - name: Stage, verify, and publish GitHub Release
-        if: steps.decide.outputs.primary == 'true' || steps.decide.outputs.secondary == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PRIMARY: ${{ steps.decide.outputs.primary }}
-          STORY_SHA: ${{ steps.meta.outputs.story_sha }}
-          STORY_ZH_CN_TREE: ${{ steps.meta.outputs.story_zh_cn_tree }}
-          GAMEDATA_SHA: ${{ steps.meta.outputs.gamedata_sha }}
+
+      - name: Stage, verify, and publish GitHub Release
+        if: steps.check.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMPAT_TAG: ${{ steps.akdp.outputs.compat_tag }}
+          VERSION_ID: ${{ steps.akdp.outputs.version_id }}
+          AKDP_TAG: ${{ steps.akdp.outputs.tag }}
         run: |
           set -euo pipefail
-
-          if [ "${PRIMARY}" = "true" ]; then
-            SOURCE=primary
-            RELEASE_TAG="upstream-${STORY_SHA}-v2"
-            TITLE_PREFIX="Story Data"
-            NOTES_EXTRA="Primary source: \`${UPSTREAM_STORY_REPO}\` @ \`${STORY_SHA}\` (zh_CN tree \`${STORY_ZH_CN_TREE}\`)."
-          else
-            SOURCE=secondary
-            RELEASE_TAG="gamedata-${GAMEDATA_SHA}-v2"
-            TITLE_PREFIX="Story Data (GameData/ASTR)"
-            NOTES_EXTRA="Secondary source: built from \`${UPSTREAM_GAMEDATA_REPO}\` @ \`${GAMEDATA_SHA}\` via \`${ASTR_REPO}\` @ \`${ASTR_SHA:-$ASTR_REF}\`."
-          fi
-
           RELEASE_DATE=$(date -u +%Y-%m-%d)
-          RELEASE_NAME="${TITLE_PREFIX} ${RELEASE_DATE}"
+          RELEASE_NAME="Story Data ${RELEASE_DATE}"
 
-          if gh release view "${RELEASE_TAG}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            IS_DRAFT=$(gh release view "${RELEASE_TAG}" --repo "${{ github.repository }}" --json isDraft --jq .isDraft)
+          # If the tag already exists as a published (non-draft) release,
+          # re-verify the published assets match and no-op.
+          if gh release view "${COMPAT_TAG}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            IS_DRAFT=$(gh release view "${COMPAT_TAG}" --repo "${{ github.repository }}" \
+              --json isDraft --jq .isDraft)
             if [ "${IS_DRAFT}" != "true" ]; then
-              echo "Published release ${RELEASE_TAG} already exists; skipping create."
+              echo "Published release ${COMPAT_TAG} already exists; re-verify against factory and skip."
+              rm -rf /tmp/release-verify
+              mkdir -p /tmp/release-verify
+              gh release download "${COMPAT_TAG}" --repo "${{ github.repository }}" --dir /tmp/release-verify
+              python3 scripts/akdp_source.py verify \
+                --factory-manifest /tmp/assets/manifest.json \
+                --asset "zh_CN.zip=/tmp/release-verify/zh_CN.zip"
+              python3 scripts/release_gate.py verify \
+                --zip /tmp/release-verify/zh_CN.zip \
+                --manifest /tmp/release-verify/manifest.json
+              echo "Verified existing published release against factory. No-op."
               exit 0
             fi
-            echo "Removing stale draft ${RELEASE_TAG} before retry."
-            gh release delete "${RELEASE_TAG}" --repo "${{ github.repository }}" --yes --cleanup-tag
+            echo "Removing stale draft ${COMPAT_TAG} before retry."
+            gh release delete "${COMPAT_TAG}" --repo "${{ github.repository }}" --yes --cleanup-tag
           fi
 
+          SUMMARY_COVERAGE=$(python3 -c \
+            "import json; print(json.load(open('/tmp/manifest.json')).get('summary_coverage','unknown'))")
+
           cat > /tmp/release_notes.md <<EOF
-          ${NOTES_EXTRA}
+          AKDP projection of factory release \`${AKDP_TAG}\`.
 
-          Source path: **${SOURCE}**
-          Generated: ${RELEASE_DATE}
+          Source: [${AKDP_REPO}](https://github.com/${AKDP_REPO})
+          Factory versionId: \`${VERSION_ID}\`
+          Summary coverage: \`${SUMMARY_COVERAGE}\`
 
-          Assets:
-          - \`zh_CN.zip\` — parsed zh_CN story package for PRTS-MCP
-          - \`manifest.json\` — source fingerprints for dual-path sync decisions
+          This release contains the zh_CN story package projected from AKDP
+          factory output. The zip bytes are identical to the factory release.
+          No LLM calls, re-compression, or injection occur in the compat path.
+
+          - zh_CN.zip: story package for PRTS-MCP
+          - manifest.json: release metadata, provenance, and SHA-256 checksums
           EOF
 
-          gh release create "${RELEASE_TAG}" \
+          gh release create "${COMPAT_TAG}" \
             --repo "${{ github.repository }}" \
             --draft \
             --title "${RELEASE_NAME}" \
             --notes-file /tmp/release_notes.md \
-            /tmp/zh_CN.zip \
+            /tmp/assets/zh_CN.zip \
             /tmp/manifest.json
 
           rm -rf /tmp/release-verify
           mkdir -p /tmp/release-verify
-          gh release download "${RELEASE_TAG}" \
+          gh release download "${COMPAT_TAG}" \
             --repo "${{ github.repository }}" \
             --dir /tmp/release-verify
           python3 scripts/release_gate.py verify \
             --zip /tmp/release-verify/zh_CN.zip \
             --manifest /tmp/release-verify/manifest.json \
             --previous-manifest /tmp/latest-release/manifest.json
-          gh release edit "${RELEASE_TAG}" \
+          gh release edit "${COMPAT_TAG}" \
             --repo "${{ github.repository }}" \
             --draft=false \
             --latest

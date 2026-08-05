@@ -14,6 +14,8 @@ from zipfile import BadZipFile, ZipFile
 
 REVIEW_TABLE = "zh_CN/gamedata/excel/story_review_table.json"
 STORY_INFO = "zh_CN/storyinfo.json"
+SUMMARIES = "zh_CN/summaries.json"
+EVENT_SUMMARIES = "zh_CN/event_summaries.json"
 CONTRACT_VERSION = "prts-story-v1"
 MAX_COUNT_DROP_FRACTION = 0.20
 
@@ -84,6 +86,63 @@ def inspect_story_zip(zip_path: Path) -> dict[str, int | str]:
                 if name.endswith(".json"):
                     _load_json(archive.read(name), name)
                     json_files += 1
+
+            names_set = set(names)
+            summaries_present = SUMMARIES in names_set
+            event_summaries_present = EVENT_SUMMARIES in names_set
+            summary_coverage = "missing"
+            chapters_with_summary = 0
+            events_with_summary = 0
+            summaries_sha256 = ""
+            event_summaries_sha256 = ""
+
+            if summaries_present:
+                s_bytes = archive.read(SUMMARIES)
+                summaries_data = _load_json(s_bytes, SUMMARIES)
+                if not isinstance(summaries_data, dict):
+                    raise ValueError("summaries.json must be an object")
+                summaries_sha256 = hashlib.sha256(s_bytes).hexdigest()
+                summary_paths = {
+                    f"zh_CN/gamedata/story/{k}.json"
+                    for k in summaries_data
+                }
+                orphaned = sorted(summary_paths - names_set)
+                if orphaned:
+                    raise ValueError(
+                        f"summaries.json has {len(orphaned)} keys with no "
+                        f"matching story file; sample={orphaned[:5]}"
+                    )
+                chapters_with_summary = len(referenced & summary_paths)
+
+            if event_summaries_present:
+                es_bytes = archive.read(EVENT_SUMMARIES)
+                event_sums = _load_json(es_bytes, EVENT_SUMMARIES)
+                if not isinstance(event_sums, dict):
+                    raise ValueError("event_summaries.json must be an object")
+                event_summaries_sha256 = hashlib.sha256(es_bytes).hexdigest()
+                event_keys = set(event_sums.keys())
+                orphaned_events = sorted(event_keys - set(review.keys()))
+                if orphaned_events:
+                    raise ValueError(
+                        f"event_summaries.json has {len(orphaned_events)} "
+                        f"keys with no matching event; sample={orphaned_events[:5]}"
+                    )
+                events_with_summary = len(set(review.keys()) & event_keys)
+
+            if summaries_present or event_summaries_present:
+                chapter_ok = (
+                    not summaries_present
+                    or chapters_with_summary == len(referenced)
+                )
+                event_ok = (
+                    not event_summaries_present
+                    or events_with_summary == len(review)
+                )
+                both_present = summaries_present and event_summaries_present
+                summary_coverage = (
+                    "complete" if both_present and chapter_ok and event_ok
+                    else "partial"
+                )
     except BadZipFile as exc:
         raise ValueError(f"invalid zip file: {exc}") from exc
 
@@ -94,6 +153,13 @@ def inspect_story_zip(zip_path: Path) -> dict[str, int | str]:
         "events": len(review),
         "chapters": len(referenced),
         "json_files": json_files,
+        "summaries_present": summaries_present,
+        "event_summaries_present": event_summaries_present,
+        "summary_coverage": summary_coverage,
+        "summaries_sha256": summaries_sha256,
+        "event_summaries_sha256": event_summaries_sha256,
+        "chapters_with_summary": chapters_with_summary,
+        "events_with_summary": events_with_summary,
     }
 
 
@@ -108,9 +174,10 @@ def check_regression(metrics: dict[str, int | str], previous: dict[str, Any] | N
     if not previous:
         return
     regressions: list[str] = []
-    for field in ("events", "chapters", "json_files"):
+    for field in ("events", "chapters", "json_files",
+                  "chapters_with_summary", "events_with_summary"):
         old = previous.get(field)
-        new = metrics[field]
+        new = metrics.get(field)
         if isinstance(old, int) and old > 0 and isinstance(new, int):
             minimum = int(old * (1 - MAX_COUNT_DROP_FRACTION))
             if new < minimum:
