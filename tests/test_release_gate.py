@@ -9,7 +9,14 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from scripts.release_gate import check_regression, finalize_manifest, verify_manifest
 
 
-def write_story_zip(path: Path, *, chapters: int = 2, invalid_json: bool = False) -> None:
+def write_story_zip(
+    path: Path,
+    *,
+    chapters: int = 2,
+    invalid_json: bool = False,
+    summaries: dict[str, str] | None = None,
+    event_summaries: dict[str, str] | None = None,
+) -> None:
     review = {
         "event": {
             "infoUnlockDatas": [
@@ -26,6 +33,10 @@ def write_story_zip(path: Path, *, chapters: int = 2, invalid_json: bool = False
         for index in range(chapters):
             content = "{" if invalid_json and index == 0 else "{}"
             archive.writestr(f"zh_CN/gamedata/story/story_{index}.json", content)
+        if summaries is not None:
+            archive.writestr("zh_CN/summaries.json", json.dumps(summaries))
+        if event_summaries is not None:
+            archive.writestr("zh_CN/event_summaries.json", json.dumps(event_summaries))
 
 
 class ReleaseGateTests(unittest.TestCase):
@@ -34,7 +45,10 @@ class ReleaseGateTests(unittest.TestCase):
         self.root = Path(self.tempdir.name)
         self.zip_path = self.root / "zh_CN.zip"
         self.manifest_path = self.root / "manifest.json"
-        self.manifest_path.write_text('{"source":"primary"}\n', encoding="utf-8")
+        self.manifest_path.write_text(
+            '{"source":"3aKHP/arknights-data-pipeline","source_version_id":"abc"}\n',
+            encoding="utf-8",
+        )
 
     def tearDown(self) -> None:
         self.tempdir.cleanup()
@@ -90,6 +104,58 @@ class ReleaseGateTests(unittest.TestCase):
         message = str(raised.exception)
         for field in metrics:
             self.assertIn(f"{field} regressed", message)
+
+    def test_complete_summaries_pass(self) -> None:
+        write_story_zip(
+            self.zip_path,
+            chapters=2,
+            summaries={"story_0": "s0", "story_1": "s1"},
+            event_summaries={"event": "es"},
+        )
+        manifest = finalize_manifest(self.zip_path, self.manifest_path)
+        self.assertEqual(manifest["summary_coverage"], "complete")
+        self.assertEqual(manifest["chapters_with_summary"], 2)
+        self.assertEqual(manifest["events_with_summary"], 1)
+        self.assertTrue(manifest["summaries_present"])
+        self.assertTrue(manifest["event_summaries_present"])
+
+    def test_partial_summaries_marked_partial(self) -> None:
+        write_story_zip(
+            self.zip_path,
+            chapters=2,
+            summaries={"story_0": "s0"},
+            event_summaries={"event": "es"},
+        )
+        manifest = finalize_manifest(self.zip_path, self.manifest_path)
+        self.assertEqual(manifest["summary_coverage"], "partial")
+        self.assertEqual(manifest["chapters_with_summary"], 1)
+
+    def test_missing_summaries_marked_missing(self) -> None:
+        write_story_zip(self.zip_path, chapters=2)
+        manifest = finalize_manifest(self.zip_path, self.manifest_path)
+        self.assertEqual(manifest["summary_coverage"], "missing")
+        self.assertFalse(manifest["summaries_present"])
+        self.assertEqual(manifest["chapters_with_summary"], 0)
+
+    def test_orphaned_chapter_summary_rejected(self) -> None:
+        write_story_zip(
+            self.zip_path,
+            chapters=2,
+            summaries={"story_0": "s0", "ghost": "no file"},
+            event_summaries={"event": "es"},
+        )
+        with self.assertRaisesRegex(ValueError, "no matching story file"):
+            finalize_manifest(self.zip_path, self.manifest_path)
+
+    def test_orphaned_event_summary_rejected(self) -> None:
+        write_story_zip(
+            self.zip_path,
+            chapters=2,
+            summaries={"story_0": "s0", "story_1": "s1"},
+            event_summaries={"event": "es", "ghost_event": "no event"},
+        )
+        with self.assertRaisesRegex(ValueError, "no matching event"):
+            finalize_manifest(self.zip_path, self.manifest_path)
 
 
 if __name__ == "__main__":
