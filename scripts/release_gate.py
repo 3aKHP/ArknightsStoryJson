@@ -138,8 +138,10 @@ def inspect_story_zip(zip_path: Path) -> dict[str, int | str]:
                     not event_summaries_present
                     or events_with_summary == len(review)
                 )
+                both_present = summaries_present and event_summaries_present
                 summary_coverage = (
-                    "complete" if chapter_ok and event_ok else "partial"
+                    "complete" if both_present and chapter_ok and event_ok
+                    else "partial"
                 )
     except BadZipFile as exc:
         raise ValueError(f"invalid zip file: {exc}") from exc

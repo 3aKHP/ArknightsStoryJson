@@ -139,6 +139,17 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertFalse(manifest["summaries_present"])
         self.assertEqual(manifest["chapters_with_summary"], 0)
 
+    def test_one_summary_file_absent_is_partial(self) -> None:
+        write_story_zip(
+            self.zip_path,
+            chapters=2,
+            summaries={"story_0": "s0", "story_1": "s1"},
+        )
+        manifest = finalize_manifest(self.zip_path, self.manifest_path)
+        self.assertEqual(manifest["summary_coverage"], "partial")
+        self.assertTrue(manifest["summaries_present"])
+        self.assertFalse(manifest["event_summaries_present"])
+
     def test_orphaned_chapter_summary_rejected(self) -> None:
         write_story_zip(
             self.zip_path,

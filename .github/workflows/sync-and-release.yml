@@ -152,15 +152,17 @@ jobs:
             IS_DRAFT=$(gh release view "${COMPAT_TAG}" --repo "${{ github.repository }}" \
               --json isDraft --jq .isDraft)
             if [ "${IS_DRAFT}" != "true" ]; then
-              echo "Published release ${COMPAT_TAG} already exists; re-verify and skip."
+              echo "Published release ${COMPAT_TAG} already exists; re-verify against factory and skip."
               rm -rf /tmp/release-verify
               mkdir -p /tmp/release-verify
               gh release download "${COMPAT_TAG}" --repo "${{ github.repository }}" --dir /tmp/release-verify
+              python3 scripts/akdp_source.py verify \
+                --factory-manifest /tmp/assets/manifest.json \
+                --asset "zh_CN.zip=/tmp/release-verify/zh_CN.zip"
               python3 scripts/release_gate.py verify \
                 --zip /tmp/release-verify/zh_CN.zip \
-                --manifest /tmp/release-verify/manifest.json \
-                --previous-manifest /tmp/latest-release/manifest.json
-              echo "Verified existing published release. No-op."
+                --manifest /tmp/release-verify/manifest.json
+              echo "Verified existing published release against factory. No-op."
               exit 0
             fi
             echo "Removing stale draft ${COMPAT_TAG} before retry."
