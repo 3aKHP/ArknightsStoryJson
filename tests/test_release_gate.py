@@ -88,10 +88,12 @@ class ReleaseGateTests(unittest.TestCase):
             finalize_manifest(self.zip_path, self.manifest_path, previous)
 
     def test_each_release_metric_regression_is_rejected(self) -> None:
-        for field in ("events", "chapters", "json_files"):
+        fields = ("events", "chapters", "json_files",
+                  "chapters_with_summary", "events_with_summary")
+        for field in fields:
             with self.subTest(field=field):
-                metrics = {"events": 10, "chapters": 10, "json_files": 10}
-                previous = {"events": 10, "chapters": 10, "json_files": 10}
+                metrics = dict.fromkeys(fields, 10)
+                previous = dict.fromkeys(fields, 10)
                 previous[field] = 20
                 with self.assertRaisesRegex(ValueError, rf"{field} regressed"):
                     check_regression(metrics, previous)

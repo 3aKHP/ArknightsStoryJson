@@ -62,10 +62,10 @@ jobs:
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMPAT_TAG: ${{ steps.akdp.outputs.compat_tag }}
+          FORCE_RELEASE: ${{ github.event.inputs.force_release || 'false' }}
         run: |
           set -euo pipefail
-          COMPAT_TAG="${{ steps.akdp.outputs.compat_tag }}"
-          FORCE_RELEASE="${{ github.event.inputs.force_release || 'false' }}"
 
           if gh release view "${COMPAT_TAG}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
             IS_DRAFT=$(gh release view "${COMPAT_TAG}" --repo "${{ github.repository }}" \
@@ -81,9 +81,11 @@ jobs:
 
       - name: Download and verify AKDP story asset
         if: steps.check.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AKDP_TAG: ${{ steps.akdp.outputs.tag }}
         run: |
           set -euo pipefail
-          AKDP_TAG="${{ steps.akdp.outputs.tag }}"
           mkdir -p /tmp/assets
           gh release download "${AKDP_TAG}" --repo "${AKDP_REPO}" \
             --pattern manifest.json \
@@ -136,10 +138,11 @@ jobs:
         if: steps.check.outputs.needed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMPAT_TAG: ${{ steps.akdp.outputs.compat_tag }}
+          VERSION_ID: ${{ steps.akdp.outputs.version_id }}
+          AKDP_TAG: ${{ steps.akdp.outputs.tag }}
         run: |
           set -euo pipefail
-          COMPAT_TAG="${{ steps.akdp.outputs.compat_tag }}"
-          VERSION_ID="${{ steps.akdp.outputs.version_id }}"
           RELEASE_DATE=$(date -u +%Y-%m-%d)
           RELEASE_NAME="Story Data ${RELEASE_DATE}"
 
@@ -168,7 +171,7 @@ jobs:
             "import json; print(json.load(open('/tmp/manifest.json')).get('summary_coverage','unknown'))")
 
           cat > /tmp/release_notes.md <<EOF
-          AKDP projection of factory release \`${{ steps.akdp.outputs.tag }}\`.
+          AKDP projection of factory release \`${AKDP_TAG}\`.
 
           Source: [${AKDP_REPO}](https://github.com/${AKDP_REPO})
           Factory versionId: \`${VERSION_ID}\`
