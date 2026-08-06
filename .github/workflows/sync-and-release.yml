@@ -39,8 +39,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          AKDP_TAG=$(gh release list --repo "${AKDP_REPO}" --exclude-drafts --limit 1 \
-            --json tagName --jq '.[0].tagName')
+          AKDP_TAG=$(gh release list --repo "${AKDP_REPO}" --exclude-drafts --limit 50 \
+            --json tagName --jq '[.[].tagName | select(startswith("data-"))][0] // ""')
           if [ -z "${AKDP_TAG}" ]; then
             echo "No non-draft AKDP release found."
             exit 1
